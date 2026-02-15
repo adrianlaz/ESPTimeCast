@@ -1236,18 +1236,16 @@ opacity: 0.5;
                 </span>
               </label>
 
-              <label class="toggle-row-lg">
-                <span class="label-text">Show Humidity:</span>
-                <span class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    id="showHumidity"
-                    name="showHumidity"
-                    onchange="setShowHumidity(this.checked)"
-                  />
-                  <span class="toggle-slider"></span>
-                </span>
-              </label>
+              <label>Weather Detail:</label>
+              <select
+                id="weatherDetailMode"
+                name="weatherDetailMode"
+                onchange="setWeatherDetail(this.value)"
+              >
+                <option value="none">Temperature Only</option>
+                <option value="humidity">Temperature + Humidity</option>
+                <option value="dewpoint">Temperature + Dew Point</option>
+              </select>
 
               <label class="toggle-row-lg">
                 <span class="label-text">Show Weather Description:</span>
@@ -1593,8 +1591,8 @@ opacity: 0.5;
             document.getElementById("showDayOfWeek").checked =
               !!data.showDayOfWeek;
             document.getElementById("showDate").checked = !!data.showDate;
-            document.getElementById("showHumidity").checked =
-              !!data.showHumidity;
+            document.getElementById("weatherDetailMode").value =
+              data.weatherDetailMode || (data.showHumidity ? "humidity" : "none");
             document.getElementById("colonBlinkEnabled").checked =
               !!data.colonBlinkEnabled;
             document.getElementById("showWeatherDescription").checked =
@@ -1818,8 +1816,14 @@ opacity: 0.5;
           document.getElementById("showDate").checked ? "on" : "",
         );
         formData.set(
+          "weatherDetailMode",
+          document.getElementById("weatherDetailMode").value,
+        );
+        formData.set(
           "showHumidity",
-          document.getElementById("showHumidity").checked ? "on" : "",
+          document.getElementById("weatherDetailMode").value === "humidity"
+            ? "on"
+            : "",
         );
         formData.set(
           "colonBlinkEnabled",
@@ -2277,11 +2281,11 @@ opacity: 0.5;
         });
       }
 
-      function setShowHumidity(val) {
-        fetch("/set_humidity", {
+      function setWeatherDetail(val) {
+        fetch("/set_weather_detail", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "value=" + (val ? 1 : 0),
+          body: "value=" + encodeURIComponent(val),
         });
       }
 
