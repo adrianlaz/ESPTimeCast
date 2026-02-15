@@ -1259,6 +1259,19 @@ opacity: 0.5;
                   <span class="toggle-slider"></span>
                 </span>
               </label>
+
+              <label class="toggle-row-lg">
+                <span class="label-text">Append Dew Point to Description:</span>
+                <span class="toggle-switch">
+                  <input
+                    type="checkbox"
+                    id="appendDewPointToDescription"
+                    name="appendDewPointToDescription"
+                    onchange="setDescDewPoint(this.checked)"
+                  />
+                  <span class="toggle-slider"></span>
+                </span>
+              </label>
             </div>
           </div>
         </div>
@@ -1597,6 +1610,8 @@ opacity: 0.5;
               !!data.colonBlinkEnabled;
             document.getElementById("showWeatherDescription").checked =
               !!data.showWeatherDescription;
+            document.getElementById("appendDewPointToDescription").checked =
+              !!data.appendDewPointToDescription;
 
             // --- Dimming Controls ---
             const autoDimmingEl = document.getElementById("autoDimmingEnabled");
@@ -1822,6 +1837,12 @@ opacity: 0.5;
         formData.set(
           "showHumidity",
           document.getElementById("weatherDetailMode").value === "humidity"
+            ? "on"
+            : "",
+        );
+        formData.set(
+          "appendDewPointToDescription",
+          document.getElementById("appendDewPointToDescription").checked
             ? "on"
             : "",
         );
@@ -2299,6 +2320,14 @@ opacity: 0.5;
 
       function setShowWeatherDescription(val) {
         fetch("/set_weatherdesc", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "value=" + (val ? 1 : 0),
+        });
+      }
+
+      function setDescDewPoint(val) {
+        fetch("/set_desc_dewpoint", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: "value=" + (val ? 1 : 0),

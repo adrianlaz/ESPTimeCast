@@ -73,6 +73,7 @@ bool showDayOfWeek = true;
 bool showDate = false;
 bool showHumidity = false;
 char weatherDetailMode[12] = "none";  // none, humidity, dewpoint
+bool appendDewPointToDescription = false;
 bool colonBlinkEnabled = true;
 char ntpServer1[64] = "pool.ntp.org";
 char ntpServer2[256] = "time.nist.gov";
@@ -244,6 +245,7 @@ void loadConfig() {
     doc[F("showDate")] = false;
     doc[F("showHumidity")] = showHumidity;
     doc[F("weatherDetailMode")] = weatherDetailMode;
+    doc[F("appendDewPointToDescription")] = appendDewPointToDescription;
     doc[F("colonBlinkEnabled")] = colonBlinkEnabled;
     doc[F("ntpServer1")] = ntpServer1;
     doc[F("ntpServer2")] = ntpServer2;
@@ -324,6 +326,7 @@ void loadConfig() {
   showDate = doc["showDate"] | false;
   showHumidity = doc["showHumidity"] | false;
   strlcpy(weatherDetailMode, doc["weatherDetailMode"] | (showHumidity ? "humidity" : "none"), sizeof(weatherDetailMode));
+  appendDewPointToDescription = doc["appendDewPointToDescription"] | false;
   colonBlinkEnabled = doc.containsKey("colonBlinkEnabled") ? doc["colonBlinkEnabled"].as<bool>() : true;
   showWeatherDescription = doc["showWeatherDescription"] | false;
 
@@ -651,6 +654,8 @@ void printConfigToSerial() {
   Serial.println(showHumidity ? "Yes" : "No");
   Serial.print(F("Weather Detail Mode: "));
   Serial.println(weatherDetailMode);
+  Serial.print(F("Append Dew Point to Description: "));
+  Serial.println(appendDewPointToDescription ? "Yes" : "No");
   Serial.print(F("Blinking colon: "));
   Serial.println(colonBlinkEnabled ? "Yes" : "No");
   Serial.print(F("NTP Server 1: "));
@@ -827,6 +832,7 @@ void setupWebServer() {
       else if (n == "showDate") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "showHumidity") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "weatherDetailMode") doc[n] = v;
+      else if (n == "appendDewPointToDescription") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "colonBlinkEnabled") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "dimStartHour") doc[n] = v.toInt();
       else if (n == "dimStartMinute") doc[n] = v.toInt();
@@ -1206,6 +1212,17 @@ void setupWebServer() {
 
     showWeatherDescription = showDesc;
     Serial.printf("[WEBSERVER] Set Show Weather Description to %d\n", showWeatherDescription);
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/set_desc_dewpoint", HTTP_POST, [](AsyncWebServerRequest *request) {
+    bool enable = false;
+    if (request->hasParam("value", true)) {
+      String v = request->getParam("value", true)->value();
+      enable = (v == "1" || v == "true" || v == "on");
+    }
+    appendDewPointToDescription = enable;
+    Serial.printf("[WEBSERVER] Set appendDewPointToDescription to %d\n", appendDewPointToDescription);
     request->send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -3215,6 +3232,10 @@ void loop() {
   // --- WEATHER DESCRIPTION Display Mode ---
   if (displayMode == 2 && showWeatherDescription && weatherAvailable && weatherDescription.length() > 0) {
     String desc = weatherDescription;
+
+    if (appendDewPointToDescription && currentDewPoint > -1000) {
+      desc += " D" + String(currentDewPoint) + "°";
+    }
 
     // --- Check if humidity is actually visible ---
     bool detailVisible = ((strcmp(weatherDetailMode, "humidity") == 0 && currentHumidity != -1) || (strcmp(weatherDetailMode, "dewpoint") == 0 && currentDewPoint > -1000))
