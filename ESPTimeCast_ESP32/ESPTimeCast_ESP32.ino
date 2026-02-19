@@ -72,6 +72,8 @@ bool twelveHourToggle = false;
 bool showDayOfWeek = true;
 bool showDate = false;
 bool showHumidity = false;
+char weatherDetailMode[12] = "none";  // none, humidity, dewpoint
+bool appendDewPointToDescription = false;
 bool colonBlinkEnabled = true;
 char ntpServer1[64] = "pool.ntp.org";
 char ntpServer2[256] = "time.nist.gov";
@@ -133,6 +135,7 @@ int displayMode = 0;  // 0: Clock, 1: Weather, 2: Weather Description, 3: Countd
 int prevDisplayMode = -1;
 bool clockScrollDone = false;
 int currentHumidity = -1;
+int currentDewPoint = -1000;
 bool ntpSyncSuccessful = false;
 
 // NTP Synchronization State Machine
@@ -241,6 +244,8 @@ void loadConfig() {
     doc[F("showDayOfWeek")] = showDayOfWeek;
     doc[F("showDate")] = false;
     doc[F("showHumidity")] = showHumidity;
+    doc[F("weatherDetailMode")] = weatherDetailMode;
+    doc[F("appendDewPointToDescription")] = appendDewPointToDescription;
     doc[F("colonBlinkEnabled")] = colonBlinkEnabled;
     doc[F("ntpServer1")] = ntpServer1;
     doc[F("ntpServer2")] = ntpServer2;
@@ -320,6 +325,8 @@ void loadConfig() {
   showDayOfWeek = doc["showDayOfWeek"] | true;
   showDate = doc["showDate"] | false;
   showHumidity = doc["showHumidity"] | false;
+  strlcpy(weatherDetailMode, doc["weatherDetailMode"] | (showHumidity ? "humidity" : "none"), sizeof(weatherDetailMode));
+  appendDewPointToDescription = doc["appendDewPointToDescription"] | false;
   colonBlinkEnabled = doc.containsKey("colonBlinkEnabled") ? doc["colonBlinkEnabled"].as<bool>() : true;
   showWeatherDescription = doc["showWeatherDescription"] | false;
 
@@ -645,6 +652,10 @@ void printConfigToSerial() {
   Serial.println(showWeatherDescription ? "Yes" : "No");
   Serial.print(F("Show Humidity: "));
   Serial.println(showHumidity ? "Yes" : "No");
+  Serial.print(F("Weather Detail Mode: "));
+  Serial.println(weatherDetailMode);
+  Serial.print(F("Append Dew Point to Description: "));
+  Serial.println(appendDewPointToDescription ? "Yes" : "No");
   Serial.print(F("Blinking colon: "));
   Serial.println(colonBlinkEnabled ? "Yes" : "No");
   Serial.print(F("NTP Server 1: "));
@@ -820,6 +831,8 @@ void setupWebServer() {
       else if (n == "showDayOfWeek") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "showDate") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "showHumidity") doc[n] = (v == "true" || v == "on" || v == "1");
+      else if (n == "weatherDetailMode") doc[n] = v;
+      else if (n == "appendDewPointToDescription") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "colonBlinkEnabled") doc[n] = (v == "true" || v == "on" || v == "1");
       else if (n == "dimStartHour") doc[n] = v.toInt();
       else if (n == "dimStartMinute") doc[n] = v.toInt();
@@ -1132,7 +1145,24 @@ void setupWebServer() {
       showHumidityNow = (v == "1" || v == "true" || v == "on");
     }
     showHumidity = showHumidityNow;
+    strlcpy(weatherDetailMode, showHumidity ? "humidity" : "none", sizeof(weatherDetailMode));
     Serial.printf("[WEBSERVER] Set showHumidity to %d\n", showHumidity);
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/set_weather_detail", HTTP_POST, [](AsyncWebServerRequest *request) {
+    String detailMode = "none";
+    if (request->hasParam("value", true)) {
+      detailMode = request->getParam("value", true)->value();
+      detailMode.toLowerCase();
+    }
+
+    if (detailMode != "humidity" && detailMode != "dewpoint") detailMode = "none";
+
+    strlcpy(weatherDetailMode, detailMode.c_str(), sizeof(weatherDetailMode));
+    showHumidity = (detailMode == "humidity");  // Backward compatibility for older config paths
+
+    Serial.printf("[WEBSERVER] Set weatherDetailMode to %s\n", weatherDetailMode);
     request->send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -1182,6 +1212,17 @@ void setupWebServer() {
 
     showWeatherDescription = showDesc;
     Serial.printf("[WEBSERVER] Set Show Weather Description to %d\n", showWeatherDescription);
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/set_desc_dewpoint", HTTP_POST, [](AsyncWebServerRequest *request) {
+    bool enable = false;
+    if (request->hasParam("value", true)) {
+      String v = request->getParam("value", true)->value();
+      enable = (v == "1" || v == "true" || v == "on");
+    }
+    appendDewPointToDescription = enable;
+    Serial.printf("[WEBSERVER] Set appendDewPointToDescription to %d\n", appendDewPointToDescription);
     request->send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -2107,9 +2148,10 @@ void fetchWeather() {
       return;
     }
 
+    float fetchedTemp = NAN;
     if (doc.containsKey(F("main")) && doc[F("main")].containsKey(F("temp"))) {
-      float temp = doc[F("main")][F("temp")];
-      currentTemp = String((int)round(temp)) + "°";
+      fetchedTemp = doc[F("main")][F("temp")];
+      currentTemp = String((int)round(fetchedTemp)) + "°";
       Serial.printf("[WEATHER] Temp: %s\n", currentTemp.c_str());
       weatherAvailable = true;
     } else {
@@ -2121,8 +2163,21 @@ void fetchWeather() {
     if (doc.containsKey(F("main")) && doc[F("main")].containsKey(F("humidity"))) {
       currentHumidity = doc[F("main")][F("humidity")];
       Serial.printf("[WEATHER] Humidity: %d%%\n", currentHumidity);
+
+      if (!isnan(fetchedTemp) && currentHumidity > 0) {
+        float tempC = (strcmp(weatherUnits, "imperial") == 0) ? ((fetchedTemp - 32.0f) * 5.0f / 9.0f) : fetchedTemp;
+        float humidityRatio = currentHumidity / 100.0f;
+        float gamma = log(humidityRatio) + (17.625f * tempC) / (243.04f + tempC);
+        float dewPointC = (243.04f * gamma) / (17.625f - gamma);
+        float dewPoint = (strcmp(weatherUnits, "imperial") == 0) ? (dewPointC * 9.0f / 5.0f + 32.0f) : dewPointC;
+        currentDewPoint = (int)round(dewPoint);
+        Serial.printf("[WEATHER] Dew Point: %d\n", currentDewPoint);
+      } else {
+        currentDewPoint = -1000;
+      }
     } else {
       currentHumidity = -1;
+      currentDewPoint = -1000;
     }
 
     if (doc.containsKey(F("weather")) && doc[F("weather")].is<JsonArray>()) {
@@ -3143,9 +3198,11 @@ void loop() {
     P.setCharSpacing(1);
     if (weatherAvailable) {
       String weatherDisplay;
-      if (showHumidity && currentHumidity != -1) {
+      if (strcmp(weatherDetailMode, "humidity") == 0 && currentHumidity != -1) {
         int cappedHumidity = (currentHumidity > 99) ? 99 : currentHumidity;
         weatherDisplay = currentTemp + " " + String(cappedHumidity) + "%";
+      } else if (strcmp(weatherDetailMode, "dewpoint") == 0 && currentDewPoint > -1000) {
+        weatherDisplay = currentTemp + " D" + String(currentDewPoint) + "°";
       } else {
         weatherDisplay = currentTemp + tempSymbol;
       }
@@ -3176,12 +3233,17 @@ void loop() {
   if (displayMode == 2 && showWeatherDescription && weatherAvailable && weatherDescription.length() > 0) {
     String desc = weatherDescription;
 
+    if (appendDewPointToDescription && currentDewPoint > -1000) {
+      desc += " D" + String(currentDewPoint) + "°";
+    }
+
     // --- Check if humidity is actually visible ---
-    bool humidityVisible = showHumidity && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
+    bool detailVisible = ((strcmp(weatherDetailMode, "humidity") == 0 && currentHumidity != -1) || (strcmp(weatherDetailMode, "dewpoint") == 0 && currentDewPoint > -1000))
+                         && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
 
     // --- Conditional padding ---
     bool addPadding = false;
-    if (prevDisplayMode == 1 && humidityVisible) {
+    if (prevDisplayMode == 1 && detailVisible) {
       addPadding = true;
     }
     if (addPadding) {
@@ -3501,12 +3563,13 @@ void loop() {
 
         String fullString = String(buf);
         bool addPadding = false;
-        bool humidityVisible = showHumidity && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
+        bool detailVisible = ((strcmp(weatherDetailMode, "humidity") == 0 && currentHumidity != -1) || (strcmp(weatherDetailMode, "dewpoint") == 0 && currentDewPoint > -1000))
+                             && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
 
         // Padding logic
         if (prevDisplayMode == 0 && (showDayOfWeek || colonBlinkEnabled)) {
           addPadding = true;
-        } else if (prevDisplayMode == 1 && humidityVisible) {
+        } else if (prevDisplayMode == 1 && detailVisible) {
           addPadding = true;
         }
         if (addPadding) {
@@ -3901,12 +3964,13 @@ void loop() {
 
     // --- Determine if we need left padding based on previous mode ---
     bool addPadding = false;
-    bool humidityVisible = showHumidity && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
+    bool detailVisible = ((strcmp(weatherDetailMode, "humidity") == 0 && currentHumidity != -1) || (strcmp(weatherDetailMode, "dewpoint") == 0 && currentDewPoint > -1000))
+                         && weatherAvailable && strlen(openWeatherApiKey) == 32 && strlen(openWeatherCity) > 0 && strlen(openWeatherCountry) > 0;
 
     // If coming from CLOCK mode
     if (prevDisplayMode == 0 && (showDayOfWeek || colonBlinkEnabled)) {
       addPadding = true;
-    } else if (prevDisplayMode == 1 && humidityVisible) {
+    } else if (prevDisplayMode == 1 && detailVisible) {
       addPadding = true;
     }
     // Apply padding (4 spaces) if needed
